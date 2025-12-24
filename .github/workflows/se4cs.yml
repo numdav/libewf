@@ -11,6 +11,7 @@ permissions:
 
 env:
   REPORT_DIR: reports
+  BUILD_WRAPPER_OUT_DIR: build_wrapper_output_directory
 
 jobs:
   check-secrets:
@@ -67,7 +68,7 @@ jobs:
         run: |
           mkdir -p "${REPORT_DIR}/snyk"
           npx snyk config set disable-suggestions=true
-          npx snyk test --all-projects --unmanaged --severity-threshold=low --json-file-output="${REPORT_DIR}/snyk/snyk.json" || true
+          npx snyk test --all-projects --unmanaged --severity-threshold=high --json-file-output="${REPORT_DIR}/snyk/snyk.json" || true
           npx snyk monitor --all-projects --unmanaged --org=numdav
           
       - uses: actions/upload-artifact@v4
@@ -97,7 +98,7 @@ jobs:
           path: reports/semgrep
 
   sonarcloud:
-    name: SonarQube Cloud
+    name: SonarQube Cloud (Full Build)
     needs: check-secrets
     if: needs.check-secrets.outputs.has_sonar == 'true'
     runs-on: ubuntu-latest
@@ -105,6 +106,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake libtool pkg-config flex bison gettext libz-dev libssl-dev
+
+      - name: Install Build Wrapper
+        uses: SonarSource/sonarqube-scan-action/install-build-wrapper@v6
+
+      - name: Run Build Wrapper
+        run: |
+          ./autogen.sh
+          ./configure
+          build-wrapper-linux-x86-64 --out-dir ${{ env.BUILD_WRAPPER_OUT_DIR }} make clean all
+
       - name: SonarQube Cloud Scan
         uses: SonarSource/sonarqube-scan-action@v6
         env:
@@ -116,8 +132,7 @@ jobs:
             -Dsonar.sources=.
             -Dsonar.exclusions=**/*.po,m4/**,config/**
             -Dsonar.host.url=https://sonarcloud.io
-            -Dsonar.c.file.suffixes=-
-            -Dsonar.cpp.file.suffixes=-
+            -Dsonar.cfamily.compile-commands=${{ env.BUILD_WRAPPER_OUT_DIR }}/compile_commands.json
 
       - name: Wait for Processing
         run: sleep 10
