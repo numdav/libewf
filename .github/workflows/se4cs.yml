@@ -11,6 +11,7 @@ permissions:
 
 env:
   REPORT_DIR: reports
+  # Definiamo la cartella di output del wrapper come variabile d'ambiente (Best Practice)
   BUILD_WRAPPER_OUT_DIR: build_wrapper_output_directory
 
 jobs:
@@ -68,9 +69,15 @@ jobs:
         run: |
           mkdir -p "${REPORT_DIR}/snyk"
           npx snyk config set disable-suggestions=true
-          npx snyk test --all-projects --unmanaged --severity-threshold=high --json-file-output="${REPORT_DIR}/snyk/snyk.json" || true
-          npx snyk monitor --all-projects --unmanaged --org=numdav
           
+          echo "Running Snyk Open Source (Dependencies)..."
+          npx snyk test --all-projects --unmanaged --severity-threshold=low --json-file-output="${REPORT_DIR}/snyk/snyk_deps.json" || true
+          
+          echo "Running Snyk Code (SAST)..."
+          npx snyk code test --all-projects --severity-threshold=low --json-file-output="${REPORT_DIR}/snyk/snyk_code.json" || true
+          
+          npx snyk monitor --all-projects --unmanaged --org=numdav
+		            
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -98,67 +105,67 @@ jobs:
           path: reports/semgrep
 
   sonarcloud:
-    name: SonarQube Cloud (Full Build)
-    needs: check-secrets
-    if: needs.check-secrets.outputs.has_sonar == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          submodules: recursive
+      name: SonarQube Cloud (Full Build)
+      needs: check-secrets
+      if: needs.check-secrets.outputs.has_sonar == 'true'
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v4
+          with:
+            fetch-depth: 0
+            submodules: recursive # Lasciamo che l'action faccia il lavoro pesante
 
-      - name: Initialize Submodules and Dependencies
-        run: |
-          git submodule update --init --recursive
-          ./synclibs.sh
+        - name: Initialize Submodules and Dependencies
+          run: |
+            git submodule update --init --recursive
+            ./synclibs.sh
 
-      - name: Install Build Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y autoconf automake libtool pkg-config flex bison gettext autopoint libz-dev libssl-dev
+        - name: Install Build Dependencies
+          run: |
+            sudo apt-get update
+            sudo apt-get install -y autoconf automake libtool pkg-config flex bison gettext autopoint libz-dev libssl-dev
 
-      - name: Install Build Wrapper
-        uses: SonarSource/sonarqube-scan-action/install-build-wrapper@v6
+        - name: Install Build Wrapper
+          uses: SonarSource/sonarqube-scan-action/install-build-wrapper@v6
 
-      - name: Run Build Wrapper
-        run: |
-          ./autogen.sh
-          ./configure
-          build-wrapper-linux-x86-64 --out-dir ${{ env.BUILD_WRAPPER_OUT_DIR }} make clean all
+        - name: Run Build Wrapper
+          run: |
+            ./autogen.sh
+            ./configure
+            build-wrapper-linux-x86-64 --out-dir ${{ env.BUILD_WRAPPER_OUT_DIR }} make clean all
 
-      - name: SonarQube Cloud Scan
-        uses: SonarSource/sonarqube-scan-action@v6
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        with:
-          args: >
-            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
-            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
-            -Dsonar.sources=.
-            -Dsonar.exclusions=**/*.po,m4/**,config/**
-            -Dsonar.host.url=https://sonarcloud.io
-            -Dsonar.cfamily.compile-commands=${{ env.BUILD_WRAPPER_OUT_DIR }}/compile_commands.json
+        - name: SonarQube Cloud Scan
+          uses: SonarSource/sonarqube-scan-action@v6
+          env:
+            SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          with:
+            args: >
+              -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+              -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
+              -Dsonar.sources=.
+              -Dsonar.exclusions=**/*.po,m4/**,config/**
+              -Dsonar.host.url=https://sonarcloud.io
+              -Dsonar.cfamily.compile-commands=${{ env.BUILD_WRAPPER_OUT_DIR }}/compile_commands.json
 
-      - name: Wait for Processing
-        run: sleep 10
+        - name: Wait for Processing
+          run: sleep 10
 
-      - name: Export Sonar Data to JSON
-        if: always()
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        run: |
-          mkdir -p "${REPORT_DIR}/sonarcloud"
-          curl -sSf -H "Authorization: Bearer ${SONAR_TOKEN}" \
-            "https://sonarcloud.io/api/issues/search?componentKeys=${{ vars.SONAR_PROJECT_KEY }}&organization=${{ vars.SONAR_ORGANIZATION }}&ps=500" \
-            -o "${REPORT_DIR}/sonarcloud/sonar-issues.json" || true
+        - name: Export Sonar Data to JSON
+          if: always()
+          env:
+            SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          run: |
+            mkdir -p "${REPORT_DIR}/sonarcloud"
+            curl -sSf -H "Authorization: Bearer ${SONAR_TOKEN}" \
+              "https://sonarcloud.io/api/issues/search?componentKeys=${{ vars.SONAR_PROJECT_KEY }}&organization=${{ vars.SONAR_ORGANIZATION }}&ps=500" \
+              -o "${REPORT_DIR}/sonarcloud/sonar-issues.json" || true
       
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: sonarcloud-report
-          path: reports/sonarcloud/
-  
+        - uses: actions/upload-artifact@v4
+          if: always()
+          with:
+            name: sonarcloud-report
+            path: reports/sonarcloud/
+			
   aggregate-reports:
     name: Final Security Dashboard
     needs: [gitguardian, snyk, semgrep, sonarcloud]
@@ -177,54 +184,90 @@ jobs:
           cat << 'EOF' > merge_reports.py
           import json
           import os
-          from datetime import datetime
+
+          def get_snyk_count():
+              count = 0
+              found = False
+              
+              deps_path = "reports/snyk-report/snyk_deps.json"
+              if os.path.exists(deps_path):
+                  found = True
+                  try:
+                      with open(deps_path, 'r') as f:
+                          content = f.read().strip()
+                          if content:
+                              data = json.loads(content)
+                              if isinstance(data, list):
+                                  count += sum(len(p.get("vulnerabilities", [])) for p in data)
+                              else:
+                                  count += len(data.get("vulnerabilities", []))
+                  except Exception:
+                      pass # Ignore errors to keep counting if possible
+
+              code_path = "reports/snyk-report/snyk_code.json"
+              if os.path.exists(code_path):
+                  found = True
+                  try:
+                      with open(code_path, 'r') as f:
+                          content = f.read().strip()
+                          if content:
+                              data = json.loads(content)
+                              if isinstance(data, list):
+                                  count += sum(len(p.get("vulnerabilities", [])) for p in data)
+                              else:
+                                  count += len(data.get("vulnerabilities", []))
+                  except Exception:
+                      pass
+
+              return count if found else "N/A"
 
           def generate_reports():
-              paths = {
-                  "gg": "reports/gitguardian-report/ggshield.json",
-                  "snyk": "reports/snyk-report/snyk.json",
-                  "semgrep": "reports/semgrep-report/semgrep.json",
-                  "sonar": "reports/sonarcloud-report/sonar-issues.json"
-              }
               results = {}
-              for tool, path in paths.items():
-                  if os.path.exists(path):
-                      with open(path, 'r') as f:
-                          try:
-                              content = f.read().strip()
-                              if not content:
-                                  results[tool] = "Empty Report"
-                                  continue
-                              
-                              data = json.loads(content)
-                              
-                              if tool == "gg": 
-                                  results["GitGuardian"] = data.get("total_incidents", 0)
-                              elif tool == "snyk": 
-                                  if isinstance(data, list):
-                                      count = sum(len(p.get("vulnerabilities", [])) for p in data)
-                                      results["Snyk"] = count
-                                  else:
-                                      results["Snyk"] = len(data.get("vulnerabilities", []))
-                              elif tool == "semgrep": 
-                                  results["Semgrep"] = len(data.get("results", []))
-                              elif tool == "sonar": 
-                                  results["SonarCloud"] = data.get("total", data.get("paging", {}).get("total", 0))
-                          except Exception as e: 
-                              results[tool] = f"Error: {str(e)}"
-                  else: results[tool] = "N/A"
+
+              gg_path = "reports/gitguardian-report/ggshield.json"
+              if os.path.exists(gg_path):
+                  try:
+                      with open(gg_path, 'r') as f:
+                          data = json.load(f)
+                          results["GitGuardian"] = data.get("total_incidents", 0)
+                  except: results["GitGuardian"] = "Error"
+              else: results["GitGuardian"] = "N/A"
+
+              semgrep_path = "reports/semgrep-report/semgrep.json"
+              if os.path.exists(semgrep_path):
+                  try:
+                      with open(semgrep_path, 'r') as f:
+                          data = json.load(f)
+                          results["Semgrep"] = len(data.get("results", []))
+                  except: results["Semgrep"] = "Error"
+              else: results["Semgrep"] = "N/A"
+
+              sonar_path = "reports/sonarcloud-report/sonar-issues.json"
+              if os.path.exists(sonar_path):
+                  try:
+                      with open(sonar_path, 'r') as f:
+                          data = json.load(f)
+                          # Gestisce sia il campo 'total' diretto che la paginazione
+                          results["SonarCloud"] = data.get("total", data.get("paging", {}).get("total", 0))
+                  except: results["SonarCloud"] = "Error"
+              else: results["SonarCloud"] = "N/A"
+
+              results["Snyk"] = get_snyk_count()
 
               md = ["### Security Scan Summary (Libewf)", "| Tool | Findings | Status |", "| :--- | :---: | :--- |"]
               for tool, count in results.items():
                   status = "CLEAN" if str(count) == "0" else "REVIEW"
-                  if isinstance(count, str) and "Error" in count: status = "FAIL"
+                  if str(count) == "N/A" or "Error" in str(count): 
+                      status = "FAIL"
+                  
                   md.append(f"| {tool} | **{count}** | {status} |")
               
               summary_file = os.environ.get('GITHUB_STEP_SUMMARY')
               if summary_file:
                   with open(summary_file, 'a') as f: f.write("\n".join(md))
+
           if __name__ == "__main__": generate_reports()
           EOF
-
+		  
       - name: Run Aggregator
         run: python merge_reports.py
