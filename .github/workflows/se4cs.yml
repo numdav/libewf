@@ -71,10 +71,10 @@ jobs:
           npx snyk config set disable-suggestions=true
           
           echo "Running Snyk Open Source (Dependencies)..."
-          npx snyk test --all-projects --unmanaged --severity-threshold=low --json-file-output="${REPORT_DIR}/snyk/snyk_deps.json" || true
+          npx snyk test --all-projects --unmanaged --json-file-output="${REPORT_DIR}/snyk/snyk_deps.json" || true
           
           echo "Running Snyk Code (SAST)..."
-          npx snyk code test --all-projects --severity-threshold=low --json-file-output="${REPORT_DIR}/snyk/snyk_code.json" || true
+          npx snyk code test --all-projects --json-file-output="${REPORT_DIR}/snyk/snyk_code.json" || true
           
           npx snyk monitor --all-projects --unmanaged --org=numdav
 
@@ -185,41 +185,46 @@ jobs:
           import json
           import os
 
-          def get_snyk_count():
+          def count_issues_in_data(data):
+              """Conta le issue in un oggetto JSON Snyk (supporta Standard e SARIF)"""
               count = 0
-              found = False
+              if "vulnerabilities" in data:
+                  count += len(data["vulnerabilities"])
               
-              deps_path = "reports/snyk-report/snyk_deps.json"
-              if os.path.exists(deps_path):
-                  found = True
-                  try:
-                      with open(deps_path, 'r') as f:
-                          content = f.read().strip()
-                          if content:
-                              data = json.loads(content)
-                              if isinstance(data, list):
-                                  count += sum(len(p.get("vulnerabilities", [])) for p in data)
-                              else:
-                                  count += len(data.get("vulnerabilities", []))
-                  except Exception:
-                      pass # Ignore errors to keep counting if possible
+              if "runs" in data:
+                  for run in data["runs"]:
+                      count += len(run.get("results", []))
+              
+              return count
 
-              code_path = "reports/snyk-report/snyk_code.json"
-              if os.path.exists(code_path):
-                  found = True
-                  try:
-                      with open(code_path, 'r') as f:
-                          content = f.read().strip()
-                          if content:
-                              data = json.loads(content)
-                              if isinstance(data, list):
-                                  count += sum(len(p.get("vulnerabilities", [])) for p in data)
-                              else:
-                                  count += len(data.get("vulnerabilities", []))
-                  except Exception:
-                      pass
+          def get_snyk_count():
+              total_count = 0
+              found_any = False
+              
+              snyk_files = [
+                  "reports/snyk-report/snyk_deps.json", # Dipendenze
+                  "reports/snyk-report/snyk_code.json"  # Codice (SAST)
+              ]
 
-              return count if found else "N/A"
+              for file_path in snyk_files:
+                  if os.path.exists(file_path):
+                      found_any = True
+                      try:
+                          with open(file_path, 'r') as f:
+                              content = f.read().strip()
+                              if not content: continue
+                              
+                              data = json.loads(content)
+                              
+                              if isinstance(data, list):
+                                  for project in data:
+                                      total_count += count_issues_in_data(project)
+                              else:
+                                  total_count += count_issues_in_data(data)
+                      except Exception:
+                          pass
+
+              return total_count if found_any else "N/A"
 
           def generate_reports():
               results = {}
@@ -247,7 +252,6 @@ jobs:
                   try:
                       with open(sonar_path, 'r') as f:
                           data = json.load(f)
-                          # Gestisce sia il campo 'total' diretto che la paginazione
                           results["SonarCloud"] = data.get("total", data.get("paging", {}).get("total", 0))
                   except: results["SonarCloud"] = "Error"
               else: results["SonarCloud"] = "N/A"
