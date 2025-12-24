@@ -108,6 +108,11 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
+      - name: Initialize Submodules and Dependencies
+        run: |
+          git submodule update --init --recursive
+          ./synclibs.sh
+
       - name: Install Build Dependencies
         run: |
           sudo apt-get update
