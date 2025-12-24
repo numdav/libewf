@@ -110,7 +110,7 @@ jobs:
       - name: Install Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y autoconf automake libtool pkg-config flex bison gettext libz-dev libssl-dev
+          sudo apt-get install -y autoconf automake libtool pkg-config flex bison gettext autopoint libz-dev libssl-dev
 
       - name: Install Build Wrapper
         uses: SonarSource/sonarqube-scan-action/install-build-wrapper@v6
