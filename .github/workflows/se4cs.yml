@@ -59,6 +59,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      
       - name: Run Snyk (Report + Dashboard push)
         continue-on-error: true
         env:
@@ -67,7 +68,7 @@ jobs:
           mkdir -p "${REPORT_DIR}/snyk"
           npx snyk config set disable-suggestions=true
           npx snyk test --all-projects --unmanaged --severity-threshold=low --json-file-output="${REPORT_DIR}/snyk/snyk.json" || true
-          npx snyk monitor --all-projects --unmanaged --org=numdav --project-name=libewf
+          npx snyk monitor --all-projects --unmanaged --org=numdav
           
       - uses: actions/upload-artifact@v4
         if: always()
@@ -115,7 +116,8 @@ jobs:
             -Dsonar.sources=.
             -Dsonar.exclusions=**/*.po,m4/**,config/**
             -Dsonar.host.url=https://sonarcloud.io
-            -Dsonar.c.file.suffixes=.c,.h
+            -Dsonar.c.file.suffixes=-
+            -Dsonar.cpp.file.suffixes=-
 
       - name: Wait for Processing
         run: sleep 10
@@ -168,23 +170,33 @@ jobs:
                   if os.path.exists(path):
                       with open(path, 'r') as f:
                           try:
-                              data = json.load(f)
-                              if tool == "gg": results["GitGuardian"] = data.get("total_incidents", 0)
+                              content = f.read().strip()
+                              if not content:
+                                  results[tool] = "Empty Report"
+                                  continue
+                              
+                              data = json.loads(content)
+                              
+                              if tool == "gg": 
+                                  results["GitGuardian"] = data.get("total_incidents", 0)
                               elif tool == "snyk": 
-                                  # Snyk JSON structure can vary with --unmanaged or multi-project
                                   if isinstance(data, list):
                                       count = sum(len(p.get("vulnerabilities", [])) for p in data)
                                       results["Snyk"] = count
                                   else:
                                       results["Snyk"] = len(data.get("vulnerabilities", []))
-                              elif tool == "semgrep": results["Semgrep"] = len(data.get("results", []))
-                              elif tool == "sonar": results["SonarCloud"] = data.get("total", data.get("paging", {}).get("total", 0))
-                          except: results[tool] = "Error"
+                              elif tool == "semgrep": 
+                                  results["Semgrep"] = len(data.get("results", []))
+                              elif tool == "sonar": 
+                                  results["SonarCloud"] = data.get("total", data.get("paging", {}).get("total", 0))
+                          except Exception as e: 
+                              results[tool] = f"Error: {str(e)}"
                   else: results[tool] = "N/A"
 
               md = ["### Security Scan Summary (Libewf)", "| Tool | Findings | Status |", "| :--- | :---: | :--- |"]
               for tool, count in results.items():
                   status = "CLEAN" if str(count) == "0" else "REVIEW"
+                  if isinstance(count, str) and "Error" in count: status = "FAIL"
                   md.append(f"| {tool} | **{count}** | {status} |")
               
               summary_file = os.environ.get('GITHUB_STEP_SUMMARY')
